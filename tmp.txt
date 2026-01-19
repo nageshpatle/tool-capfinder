@@ -5,4 +5,3 @@ add ignore list if someone doesnt wna tot use a certain capacitor
 Make one page flow ppt
 
 Hide advanced options like ESR and frequency and minimum operating voltage in the dropdow
-
