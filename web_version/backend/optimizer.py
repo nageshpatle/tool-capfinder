@@ -63,13 +63,22 @@ class OptimizerService:
         except: 
             return 0.0
 
-    def solve(self, constraints):
+    def solve_generator(self, constraints):
         # Unpack constraints
         target_F = float(constraints.get('target_cap', 100)) * 1e-6
         tol = float(constraints.get('tolerance', 1.0)) / 100.0
         bias = float(constraints.get('dc_bias', 5.0))
         max_n = int(constraints.get('max_count', 25))
-        min_rated_v = float(constraints.get('min_rated_volt', 10.0))
+        
+        # New: Overrated logic
+        # If 'overrate_pct' is in constraints, use it to calc min_rated_v
+        # Else use explicit 'min_rated_volt'
+        overrate = float(constraints.get('overrate_pct', 0.0))
+        if overrate > 0:
+            min_rated_v = bias * (1.0 + overrate/100.0)
+        else:
+            min_rated_v = float(constraints.get('min_rated_volt', bias))
+
         min_temp = float(constraints.get('min_temp', 85))
         allowed_pkgs = set(constraints.get('packages', []))
         conn_type = int(constraints.get('conn_type', 2)) # 1, 2, or 3
@@ -77,14 +86,17 @@ class OptimizerService:
         win = (target_F * (1-tol), target_F * (1+tol))
 
         if self.df_library is None:
-            return [{'error': 'Library not loaded'}]
+            yield (0, [{'error': 'Library not loaded'}])
+            return
 
         # FILTER
+        yield (5, [])
         mask = (self.df_library['VoltageRatedDC'] >= min_rated_v) & \
                (self.df_library['MaxTemp_Val'] >= min_temp) & \
                (self.df_library['Package'].isin(allowed_pkgs))
         
         candidates = self.df_library[mask].copy()
+        yield (10, [])
         
         processed = []
         for _, r in candidates.iterrows():
@@ -95,11 +107,13 @@ class OptimizerService:
                     'P': r['MfrPartName'], 
                     'K': r['Package'], 
                     'C': ce, 
-                    'V': vol
+                    'V': vol,
+                    'Url': f"https://www.digikey.com/en/products/result?keywords={r['MfrPartName']}"
                 })
         
         if not processed:
-            return []
+            yield (100, [])
+            return
 
         # CALCULATE DENSITY
         for p in processed:
@@ -107,9 +121,7 @@ class OptimizerService:
 
         df_proc = pd.DataFrame(processed)
 
-        # SORTING STRATEGY (The Fix)
-        # 1. Top 500 by Density
-        # 2. Top 100 by Capacitance
+        # SORTING STRATEGY
         top_dens = df_proc.sort_values(by='D', ascending=False).head(500)
         top_cap = df_proc.sort_values(by='C', ascending=False).head(100)
 
@@ -117,8 +129,9 @@ class OptimizerService:
         search = combined.to_dict('records')
 
         sols = []
-
+        
         # 1p Logic
+        yield (15, [])
         for pA in search:
             n_min = max(1, int(np.ceil(win[0]/pA['C'])))
             n_max = min(max_n, int(np.floor(win[1]/pA['C'])))
@@ -130,33 +143,30 @@ class OptimizerService:
                     'Type': '1p',
                     'BOM': f"{n}x {pA['K']}",
                     'Cfg': f"{n}x {pA['P']} ({pA['K']})",
-                    'Parts': [ {'part': pA['P'], 'count': n} ]
+                    'Parts': [ {'part': pA['P'], 'count': n} ],
+                    'Links': pA['Url']
                 })
+        
+        if sols: yield (30, sols)
 
         # 2p Logic
         if conn_type >= 2:
-            for pA in search:
+            total_search = len(search)
+            for i, pA in enumerate(search):
+                # Progress update for 2p loop (30% to 80%)
+                prog = 30 + int(50 * (i / total_search))
+                if i % 10 == 0: yield (prog, sols)
+
                 for pB in search:
                     if pA['P'] == pB['P']: continue
-                    
-                    # Optimization: Iterate nA and solve for nB directly
-                    # nA * C_A + nB * C_B ~= Target
-                    # nB ~= (Target - nA * C_A) / C_B
                     
                     for nA in range(1, max_n):
                         rem_min = win[0] - nA*pA['C']
                         rem_max = win[1] - nA*pA['C']
                         
-                        # Optimization: if remainder is negative, increasing nA further will only make it worse? 
-                        # Not necessarily if we want 2p, but usually yes. 
-                        # Actually if rem < 0, we already have too much cap with just A.
-                        if rem_min <= 0 and rem_max <= 0: break # Optim
+                        if rem_min <= 0 and rem_max <= 0: break
                         
-                        # We need nB * C_B to be in [rem_min, rem_max]
-                        # nB_min = ceil(rem_min / C_B)
-                        # nB_max = floor(rem_max / C_B)
-                        
-                        if rem_min <= 0: rem_min = 0 # Can't have neg cap
+                        if rem_min <= 0: rem_min = 0
                         
                         nB_min = int(np.ceil(rem_min / pB['C']))
                         nB_max = int(np.floor(rem_max / pB['C']))
@@ -173,24 +183,27 @@ class OptimizerService:
                                         'Type': '2p',
                                         'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']}",
                                         'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']}",
-                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB} ]
+                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB} ],
+                                        'Links': pA['Url'] # Just link first part for now? Or maybe a search for both?
+                                        # User asked for "icon next to caps where one will click". 
+                                        # Getting sophisticated: multiple links is hard in one cell.
+                                        # Let's just point to the primary part if mixed, or just the first one.
+                                        # Actually, better to link the dominant part or just provide a generic search if multiple.
+                                        # For simplicity: Link the first part.
                                     })
 
         # 3p Logic
         if conn_type >= 3:
-            # Limit scope for N^3
             subset = search[:15]
-            for pA in subset:
+            for i, pA in enumerate(subset):
+                # Progress 80% to 95%
+                prog = 80 + int(15 * (i / len(subset)))
+                yield (prog, sols)
+
                 for pB in subset:
                     if pA['P'] == pB['P']: continue
                     for pC in subset:
                         if pC['P'] in [pA['P'], pB['P']]: continue
-                        
-                        # Simplified greedy(ish) 1,1,X check or small loop
-                        # To keep it fast, we can just fix nA=1, nB=1 (or small range) and find nC?
-                        # The original code only checked nA=1, nB=1. Wait, let's check
-                        # "nA, nB = 1, 1" -> Yes, original code hardcoded 1,1 for A and B.
-                        # Let's keep that optimization for now as 3p searches are explosive.
                         
                         nA, nB = 1, 1
                         rem_min = win[0] - (nA*pA['C'] + nB*pB['C'])
@@ -206,12 +219,23 @@ class OptimizerService:
                                         'Type': '3p',
                                         'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']} + {nC}x {pC['K']}",
                                         'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']} + {nC}x {pC['P']}",
-                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB}, {'part': pC['P'], 'count': nC} ]
+                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB}, {'part': pC['P'], 'count': nC} ],
+                                        'Links': pA['Url']
                                     })
 
         # Final Sort and Limit
         df_sol = pd.DataFrame(sols)
-        if df_sol.empty: return []
-        
-        df_sol = df_sol.sort_values(by='Vol').head(50)
-        return df_sol.to_dict('records')
+        # Yield final result
+        if df_sol.empty: 
+            yield (100, [])
+        else:
+            df_sol = df_sol.sort_values(by='Vol').head(50)
+            yield (100, df_sol.to_dict('records'))
+
+    def solve(self, constraints):
+        # Wrapper for backward compatibility (non-streaming)
+        gen = self.solve_generator(constraints)
+        last_val = []
+        for prog, val in gen:
+            last_val = val
+        return last_val
