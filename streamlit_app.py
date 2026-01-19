@@ -4,7 +4,9 @@ import sys
 import os
 
 # Ensure we can import the backend logic
-sys.path.append(os.path.join(os.path.dirname(__file__), "web_version", "backend"))
+backend_path = os.path.join(os.path.dirname(__file__), "web_version", "backend")
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
 from optimizer import OptimizerService
 
 # Page Config
