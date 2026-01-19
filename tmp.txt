@@ -1,0 +1,7 @@
+ADD ESR and SRF data to the unified sheet.
+Add nominal thickness instead of max thickness.
+Allow filtering for packages, codes, temperature, etc 
+add ignore list if someone doesnt wna tot use a certain capacitor
+Make one page flow ppt
+
+Hide advanced options like ESR and frequency and minimum operating voltage in the dropdow
