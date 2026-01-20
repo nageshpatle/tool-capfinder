@@ -4,8 +4,15 @@ __pycache__/
 venv/
 .env
 
-# Large Data Files (Keep Unified Library for App, Ignore Master)
-temp_vertical_cache.csv
+# Large Data Files
+data/temp_vertical_cache.csv
+data/Murata_SideBySide_Master.csv
+
+# Private Files
+docs/documentation.pptx
+docs/ROADMAP.md
+archive/
+
 
 # IDEs
 .vscode/

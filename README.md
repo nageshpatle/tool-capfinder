@@ -27,16 +27,22 @@ It helps engineers filter, compare, and optimize capacitor choices using real el
 ```
 tool-capfinder/
 │
-├── streamlit_app.py        # Streamlit UI entry point
-├── capacitor_gui.py        # Core GUI logic
-├── combine_final.py        # Dataset unification + cleaning
-├── optimize_caps.py        # Optimization / ranking logic
+├── data/                   # Data files
+│   ├── Murata_Unified_Library.csv
+│   └── ...
 │
-├── data/
-│   └── Murata_Unified_Library.csv   # Main dataset used by the app
+├── src/                    # Source code
+│   ├── app.py              # Streamlit UI entry point
+│   ├── optimizer.py        # Core algorithm
+│   ├── scrapers/           # Web scrapers
+│   └── processors/         # Data processing scripts
 │
+├── docs/
+│   └── ROADMAP.md          # Future plans
+│
+├── archive/                # Deprecated files
 ├── .gitignore
-├── README.md
+└── README.md
 ```
 
 > Large intermediate or cache CSVs are intentionally ignored and not tracked.
@@ -66,8 +72,9 @@ pip install streamlit pandas numpy
 
 ### 3. Launch the app
 
+Double-click `run_app.bat` or run:
 ```bash
-streamlit run streamlit_app.py
+streamlit run src/app.py
 ```
 
 ---
