@@ -287,7 +287,7 @@ if run_btn:
                     column_order=['Rank', 'Vol', 'Capacitance', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3'],
                     column_config=col_cfg,
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     height=600
                 )
         

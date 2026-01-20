@@ -1,0 +1,162 @@
+  // 1. Define the potential grid IDs found in your screenshot
+var grids = ['#product_grid1', '#simsurfing_grid'];
+
+grids.forEach(function(id) {
+    // Check if the element actually exists in this frame
+    if ($(id).length > 0) {
+        console.log("🔓 Unlocking hidden columns on: " + id);
+        
+        // 2. Force 'SRF' to be visible (try both capitalizations just in case)
+        $(id).jqxGrid('showcolumn', 'SRF'); 
+        $(id).jqxGrid('showcolumn', 'srf');
+
+        // 3. Force the grid to redraw itself
+        $(id).jqxGrid('render');
+        $(id).jqxGrid('refresh');
+    }
+});
+
+console.log("✅ Done! Check the table for a new 'SRF' column.");
+
+=====================
+
+(function() {
+    console.log("🚀 Starting Smart Export in 'top' context...");
+    
+    // 1. Get the data from the grid
+    var grid = $('#product_grid1');
+    var rows = grid.jqxGrid('getrows');
+
+    if (!rows || rows.length === 0) {
+        console.error("❌ No data found! Try scrolling the table a tiny bit to force it to load, then run this again.");
+        return;
+    }
+
+    console.log("📊 Found " + rows.length + " items. Analyzing data structure...");
+
+    // 2. AUTO-DETECT KEY NAMES
+    // We look at the first row to find the EXACT internal names Murata uses.
+    var sample = rows[0];
+    var keys = Object.keys(sample);
+    
+    // Find the key that holds the Part Number (usually starts with 'GRM' or 'GCM')
+    var pnKey = keys.find(k => typeof sample[k] === 'string' && (sample[k].startsWith('GRM') || sample[k].startsWith('GCM')));
+    
+    // Find the key that looks like SRF (search for 'srf', 'freq', 'res')
+    var srfKey = keys.find(k => k.toLowerCase().includes('srf') || k.toLowerCase().includes('freq'));
+
+    console.log("🔎 Detected PartNumber Key: " + pnKey);
+    console.log("🔎 Detected SRF Key: " + srfKey);
+
+    if (!pnKey) {
+        alert("Could not auto-detect Part Number key. Check console for details.");
+        console.log("Available keys:", keys);
+        return;
+    }
+
+    // 3. Build the CSV using the detected keys
+    var csv = "PartNumber,SRF_MHz,Capacitance,Voltage\n";
+    
+    rows.forEach(row => {
+        var pn = row[pnKey];
+        var srf = srfKey ? row[srfKey] : ""; // Use the detected key!
+        
+        // Grab generic cap/volt if easy to find, otherwise skip
+        var cap = row.capacitance || row.capacitance_pu || "";
+        var volt = row.rated_volt || row.rated_voltage || "";
+
+        if (pn) {
+            // Clean data
+            var cPN = String(pn).replace(/,/g, "");
+            var cSRF = String(srf).replace(/,/g, "");
+            csv += `${cPN},${cSRF},${cap},${volt}\n`;
+        }
+    });
+
+    // 4. Download
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "Murata_Smart_Export.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    console.log("✅ Export Complete! Check 'Murata_Smart_Export.csv'");
+})();
+
+
+====================
+
+(function() {
+    console.log("🚀 Starting Smart Export in 'top' context...");
+    
+    // 1. Get the data from the grid
+    var grid = $('#product_grid1');
+    var rows = grid.jqxGrid('getrows');
+
+    if (!rows || rows.length === 0) {
+        console.error("❌ No data found! Try scrolling the table a tiny bit to force it to load, then run this again.");
+        return;
+    }
+
+    console.log("📊 Found " + rows.length + " items. Analyzing data structure...");
+
+    // 2. AUTO-DETECT KEY NAMES
+    // We look at the first row to find the EXACT internal names Murata uses.
+    var sample = rows[0];
+    var keys = Object.keys(sample);
+    
+    // Find the key that holds the Part Number (usually starts with 'GRM' or 'GCM')
+    var pnKey = keys.find(k => typeof sample[k] === 'string' && (sample[k].startsWith('GRM') || sample[k].startsWith('GCM')));
+    
+    // Find the key that looks like SRF (search for 'srf', 'freq', 'res')
+    var srfKey = keys.find(k => k.toLowerCase().includes('srf') || k.toLowerCase().includes('freq'));
+
+    console.log("🔎 Detected PartNumber Key: " + pnKey);
+    console.log("🔎 Detected SRF Key: " + srfKey);
+
+    if (!pnKey) {
+        alert("Could not auto-detect Part Number key. Check console for details.");
+        console.log("Available keys:", keys);
+        return;
+    }
+
+    // 3. Build the CSV using the detected keys
+    var csv = "PartNumber,SRF_MHz,Capacitance,Voltage\n";
+    
+    rows.forEach(row => {
+        var pn = row[pnKey];
+        var srf = srfKey ? row[srfKey] : ""; // Use the detected key!
+        
+        // Grab generic cap/volt if easy to find, otherwise skip
+        var cap = row.capacitance || row.capacitance_pu || "";
+        var volt = row.rated_volt || row.rated_voltage || "";
+
+        if (pn) {
+            // Clean data
+            var cPN = String(pn).replace(/,/g, "");
+            var cSRF = String(srf).replace(/,/g, "");
+            csv += `${cPN},${cSRF},${cap},${volt}\n`;
+        }
+    });
+
+    // 4. Download
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "Murata_Smart_Export.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    console.log("✅ Export Complete! Check 'Murata_Smart_Export.csv'");
+})();
+
+
+
+
+
+
+
+
