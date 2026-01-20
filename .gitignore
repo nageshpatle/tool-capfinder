@@ -15,6 +15,10 @@ data/logs/
 docs/
 archive/
 
+#Temp Files
+# Ignore Excel temporary files
+**/~$*
+
 
 # IDEs
 .vscode/
