@@ -7,6 +7,9 @@ venv/
 # Large Data Files
 data/temp_vertical_cache.csv
 data/Murata_SideBySide_Master.csv
+data/cache/
+data/logs/
+
 
 # Private Files
 docs/

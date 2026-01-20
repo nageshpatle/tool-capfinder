@@ -180,6 +180,9 @@ with st.sidebar:
     
     with st.expander("Advanced Settings"):
         min_temp = st.selectbox("Min Temperature (C)", [85, 105, 125], index=0)
+        st.caption("ESR Optimization")
+        freq_khz = st.number_input("Operating Freq (kHz)", value=100.0, step=10.0, format="%g")
+        max_esr = st.number_input("Max System ESR (Ω)", value=0.5, step=0.05, format="%g")
 
     st.markdown('<div class="footer">Made with Meraki by Nagesh Patle</div>', unsafe_allow_html=True)
 
@@ -213,7 +216,10 @@ if run_btn:
             'min_rated_volt': min_rated_v,
             'min_temp': min_temp,
             'conn_type': conn_type,
-            'packages': selected_pkgs
+            'packages': selected_pkgs,
+            'target_freq': freq_khz * 1000.0,
+            'max_esr': max_esr
+        }
         }
         
         gen = optimizer.solve_generator(constraints)
@@ -231,6 +237,7 @@ if run_btn:
                         'Rank': i + 1,
                         'Vol': r['Vol'], 
                         'Capacitance': r['Cap'] * 1e6,
+                        'ESR': r.get('ESR', 0),
                         'Configuration': r['BOM'] # User requested "3x 0603 + ..." which is 'BOM'
                     }
                     
@@ -263,6 +270,8 @@ if run_btn:
                     "{:.4f}", subset=["Vol"]
                 ).format(
                     "{:.2f}", subset=["Capacitance"]
+                ).format(
+                    "{:.4f}", subset=["ESR"]
                 )
 
                 # Col Config
@@ -270,6 +279,7 @@ if run_btn:
                     "Rank": st.column_config.NumberColumn("Rank", width="small"),
                     "Vol": st.column_config.NumberColumn("Vol (mm³)", width="small"),
                     "Capacitance": st.column_config.NumberColumn("Derated Cap (µF)", width="small"),
+                    "ESR": st.column_config.NumberColumn("ESR (Ω)", format="%.4f", width="small"),
                     "Configuration": st.column_config.TextColumn("Configuration", width="medium"), 
                 }
                 
@@ -284,7 +294,7 @@ if run_btn:
                 # Render
                 table_placeholder.dataframe(
                     styler,
-                    column_order=['Rank', 'Vol', 'Capacitance', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3'],
+                    column_order=['Rank', 'Vol', 'Capacitance', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3'],
                     column_config=col_cfg,
                     hide_index=True,
                     width="stretch",

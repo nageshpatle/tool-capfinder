@@ -43,6 +43,39 @@ class OptimizerService:
         unique_pkgs = self.df_library['Package'].unique().tolist()
         return sorted(unique_pkgs, key=self.get_area_sort_key)
 
+    def get_esr(self, row, freq_hz):
+        try:
+            # Parse vectors
+            f_str = str(row.get('ESR__Freq', '')).replace('[', '').replace(']', '').strip()
+            e_str = str(row.get('ESR__Ohm', '')).replace('[', '').replace(']', '').strip()
+            
+            if not f_str or not e_str: return 0.0
+            
+            f_vec = np.fromstring(f_str, sep=' ')
+            e_vec = np.fromstring(e_str, sep=' ')
+            
+            if len(f_vec) == 0 or len(e_vec) == 0: return 0.0
+            
+            # Interpolate (Log-Log preferred for Freq vs Z/ESR)
+            if freq_hz <= f_vec[0]: return e_vec[0]
+            if freq_hz >= f_vec[-1]: return e_vec[-1]
+            
+            # Safe Log
+            # Ensure positive inputs for log
+            valid = (f_vec > 0) & (e_vec > 0)
+            if not valid.all():
+                # Fallback to linear if data is weird
+                return np.interp(freq_hz, f_vec, e_vec)
+
+            x = np.log10(freq_hz)
+            xp = np.log10(f_vec[valid])
+            fp = np.log10(e_vec[valid])
+            
+            log_res = np.interp(x, xp, fp)
+            return np.power(10, log_res)
+        except: 
+            return 0.0
+
     def get_derated(self, row, bias):
         try:
             # Parse vectors
@@ -82,6 +115,11 @@ class OptimizerService:
         min_temp = float(constraints.get('min_temp', 85))
         allowed_pkgs = set(constraints.get('packages', []))
         conn_type = int(constraints.get('conn_type', 2)) # 1, 2, or 3
+        
+        # New: Frequency & ESR
+        target_freq = float(constraints.get('target_freq', 100000)) # Default 100kHz
+        max_sys_esr = float(constraints.get('max_esr', 1.0)) # Default 1 Ohm
+
 
         win = (target_F * (1-tol), target_F * (1+tol))
 
@@ -91,9 +129,14 @@ class OptimizerService:
 
         # FILTER
         yield (5, [])
+        # SRF Filter: SRF_MHz * 1e6 > target_freq
+        # Ensure SRF_MHz is numeric first? It should be from load_library but let's be safe or just use it.
+        # We assume SRF_MHz is float.
+        
         mask = (self.df_library['VoltageRatedDC'] >= min_rated_v) & \
                (self.df_library['MaxTemp_Val'] >= min_temp) & \
-               (self.df_library['Package'].isin(allowed_pkgs))
+               (self.df_library['Package'].isin(allowed_pkgs)) & \
+               ((self.df_library['SRF_MHz'] * 1e6) > target_freq)
         
         candidates = self.df_library[mask].copy()
         yield (10, [])
@@ -101,6 +144,8 @@ class OptimizerService:
         processed = []
         for _, r in candidates.iterrows():
             ce = self.get_derated(r, bias)
+            esr_val = self.get_esr(r, target_freq)
+            
             if ce > 0:
                 vol = float(r['Volume_mm3']) if pd.notna(r['Volume_mm3']) else 0.0
                 processed.append({
@@ -108,6 +153,7 @@ class OptimizerService:
                     'K': r['Package'], 
                     'C': ce, 
                     'V': vol,
+                    'E': esr_val, # Store component ESR
                     'Url': f"https://www.digikey.com/en/products/result?keywords={r['MfrPartName']}"
                 })
         
@@ -137,15 +183,19 @@ class OptimizerService:
             n_max = min(max_n, int(np.floor(win[1]/pA['C'])))
             
             for n in range(n_min, n_max+1):
-                sols.append({
-                    'Vol': n*pA['V'],
-                    'Cap': n*pA['C'],
-                    'Type': '1p',
-                    'BOM': f"{n}x {pA['K']}",
-                    'Cfg': f"{n}x {pA['P']} ({pA['K']})",
-                    'Parts': [ {'part': pA['P'], 'count': n} ],
-                    'Links': pA['Url']
-                })
+                # Calc System ESR for 1p: ESR / n
+                sys_esr = pA['E'] / n if n > 0 else pA['E']
+                if sys_esr <= max_sys_esr:
+                    sols.append({
+                        'Vol': n*pA['V'],
+                        'Cap': n*pA['C'],
+                        'ESR': sys_esr,
+                        'Type': '1p',
+                        'BOM': f"{n}x {pA['K']}",
+                        'Cfg': f"{n}x {pA['P']} ({pA['K']})",
+                        'Parts': [ {'part': pA['P'], 'count': n} ],
+                        'Links': pA['Url']
+                    })
         
         if sols: yield (30, sols)
 
@@ -177,20 +227,23 @@ class OptimizerService:
                             if nA + nB <= max_n:
                                 tot_c = nA*pA['C'] + nB*pB['C']
                                 if win[0] <= tot_c <= win[1]:
-                                    sols.append({
-                                        'Vol': nA*pA['V'] + nB*pB['V'],
-                                        'Cap': tot_c,
-                                        'Type': '2p',
-                                        'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']}",
-                                        'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']}",
-                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB} ],
-                                        'Links': pA['Url'] # Just link first part for now? Or maybe a search for both?
-                                        # User asked for "icon next to caps where one will click". 
-                                        # Getting sophisticated: multiple links is hard in one cell.
-                                        # Let's just point to the primary part if mixed, or just the first one.
-                                        # Actually, better to link the dominant part or just provide a generic search if multiple.
-                                        # For simplicity: Link the first part.
-                                    })
+                                    # Calc 2p ESR: 1 / ( (nA/Ra) + (nB/Rb) )
+                                    # Avoid div by zero if ESR is 0 (unlikely but safe)
+                                    gA = (nA/pA['E']) if pA['E'] > 0 else 999999
+                                    gB = (nB/pB['E']) if pB['E'] > 0 else 999999
+                                    sys_esr = 1.0 / (gA + gB)
+                                    
+                                    if sys_esr <= max_sys_esr:
+                                        sols.append({
+                                            'Vol': nA*pA['V'] + nB*pB['V'],
+                                            'Cap': tot_c,
+                                            'ESR': sys_esr,
+                                            'Type': '2p',
+                                            'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']}",
+                                            'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']}",
+                                            'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB} ],
+                                            'Links': pA['Url']
+                                        })
 
         # 3p Logic
         if conn_type >= 3:
@@ -213,15 +266,22 @@ class OptimizerService:
                             if nA + nB + nC <= max_n:
                                 tot = nA*pA['C'] + nB*pB['C'] + nC*pC['C']
                                 if win[0] <= tot <= win[1]:
-                                    sols.append({
-                                        'Vol': nA*pA['V'] + nB*pB['V'] + nC*pC['V'],
-                                        'Cap': tot,
-                                        'Type': '3p',
-                                        'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']} + {nC}x {pC['K']}",
-                                        'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']} + {nC}x {pC['P']}",
-                                        'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB}, {'part': pC['P'], 'count': nC} ],
-                                        'Links': pA['Url']
-                                    })
+                                    gA = (nA/pA['E']) if pA['E'] > 0 else 999999
+                                    gB = (nB/pB['E']) if pB['E'] > 0 else 999999
+                                    gC = (nC/pC['E']) if pC['E'] > 0 else 999999
+                                    sys_esr = 1.0 / (gA + gB + gC)
+                                    
+                                    if sys_esr <= max_sys_esr:
+                                        sols.append({
+                                            'Vol': nA*pA['V'] + nB*pB['V'] + nC*pC['V'],
+                                            'Cap': tot,
+                                            'ESR': sys_esr,
+                                            'Type': '3p',
+                                            'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']} + {nC}x {pC['K']}",
+                                            'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']} + {nC}x {pC['P']}",
+                                            'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB}, {'part': pC['P'], 'count': nC} ],
+                                            'Links': pA['Url']
+                                        })
 
         # Final Sort and Limit
         df_sol = pd.DataFrame(sols)
