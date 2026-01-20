@@ -291,7 +291,6 @@ if run_btn:
                     height=600
                 )
                 if len(df_disp) < 25:
-                    st.info("Fewer than 25 results found. Consider increasing the maximum capacitor count, total capacitor tolerance range, or available package options.")
-        
-        
+                    st.error("Fewer than 25 results found. Consider increasing the maximum capacitor count, total capacitor tolerance range, or available package options.")
+
         progress_container.empty()
