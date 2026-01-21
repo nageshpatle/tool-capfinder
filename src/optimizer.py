@@ -26,22 +26,31 @@ class OptimizerService:
                 print(f"Library file not found: {self.library_path}")
                 return
 
-            self.df_library = pd.read_csv(self.library_path)
+            self.df_library = pd.read_csv(self.library_path, dtype={'Package': str})
             # Pre-calc MaxTemp
             self.df_library['MaxTemp_Val'] = self.df_library['MaxTemp'].apply(
                 lambda x: float(re.sub(r'[^\d.]', '', str(x))) if pd.notna(x) else 85.0
             )
             # Normalize Package
             self.df_library['Package'] = self.df_library['Package'].apply(
-                lambda x: str(x).strip().zfill(4)
+                lambda x: str(x).strip()
             )
+
+            # Ensure Dimensions are numeric
+            for col in ['Length_mm', 'Width_mm', 'MaxThickness_mm']:
+                if col in self.df_library.columns:
+                    self.df_library[col] = pd.to_numeric(self.df_library[col], errors='coerce').fillna(0.0)
+            
+            # Cache available packages
+            unique_pkgs = self.df_library['Package'].unique().tolist()
+            self.cached_packages = sorted(unique_pkgs, key=self.get_area_sort_key)
+            
         except Exception as e:
             print(f"Error loading library: {e}")
 
     def get_available_packages(self):
         if self.df_library is None: return []
-        unique_pkgs = self.df_library['Package'].unique().tolist()
-        return sorted(unique_pkgs, key=self.get_area_sort_key)
+        return getattr(self, 'cached_packages', [])
 
     def get_esr(self, row, freq_hz):
         try:
@@ -79,8 +88,8 @@ class OptimizerService:
     def get_derated(self, row, bias):
         try:
             # Parse vectors
-            v_str = str(row['V_Cv']).replace('[', '').replace(']', '').strip()
-            c_str = str(row['C_Cv']).replace('[', '').replace(']', '').strip()
+            v_str = str(row.get('C_Cv__V', '')).replace('[', '').replace(']', '').strip()
+            c_str = str(row.get('C_Cv__C', '')).replace('[', '').replace(']', '').strip()
             
             if not v_str or not c_str: return 0.0
             
@@ -98,8 +107,22 @@ class OptimizerService:
 
     def solve_generator(self, constraints):
         # Unpack constraints
-        target_F = float(constraints.get('target_cap', 100)) * 1e-6
-        tol = float(constraints.get('tolerance', 1.0)) / 100.0
+        # Support both new Range inputs and legacy Target/Tol
+        if 'min_cap' in constraints and 'max_cap' in constraints:
+            min_c = float(constraints['min_cap'])
+            max_c = float(constraints['max_cap'])
+            # Derive a "target" for sorting/scoring purposes (midpoint)
+            target_F = (min_c + max_c) / 2.0
+            tol = 0.0 # Not used in range mode
+        else:
+            # Legacy
+            target_F = float(constraints.get('target_cap', 100)) * 1e-6
+            tol = float(constraints.get('tolerance', 1.0)) / 100.0
+            min_c = target_F * (1 - tol)
+            max_c = target_F * (1 + tol)
+
+        win = (min_c, max_c)
+
         bias = float(constraints.get('dc_bias', 5.0))
         max_n = int(constraints.get('max_count', 25))
         
@@ -119,9 +142,6 @@ class OptimizerService:
         # New: Frequency & ESR
         target_freq = float(constraints.get('target_freq', 100000)) # Default 100kHz
         max_sys_esr = float(constraints.get('max_esr', 1.0)) # Default 1 Ohm
-
-
-        win = (target_F * (1-tol), target_F * (1+tol))
 
         if self.df_library is None:
             yield (0, [{'error': 'Library not loaded'}])
@@ -148,12 +168,22 @@ class OptimizerService:
             
             if ce > 0:
                 vol = float(r['Volume_mm3']) if pd.notna(r['Volume_mm3']) else 0.0
+                h_val = float(r['MaxThickness_mm'])
+                # Calculate Area dynamically: L * W
+                len_mm = float(r.get('Length_mm', 0.0))
+                wid_mm = float(r.get('Width_mm', 0.0))
+                area_val = len_mm * wid_mm
+                
                 processed.append({
                     'P': r['MfrPartName'], 
                     'K': r['Package'], 
                     'C': ce, 
                     'V': vol,
                     'E': esr_val, # Store component ESR
+                    'H': h_val,
+                    'A': area_val,
+                    'L': len_mm,  # Length for layout
+                    'W': wid_mm,  # Width for layout
                     'Url': f"https://www.digikey.com/en/products/result?keywords={r['MfrPartName']}"
                 })
         
@@ -190,10 +220,12 @@ class OptimizerService:
                         'Vol': n*pA['V'],
                         'Cap': n*pA['C'],
                         'ESR': sys_esr,
+                        'Area': n*pA['A'],
+                        'Height': pA['H'],
                         'Type': '1p',
                         'BOM': f"{n}x {pA['K']}",
                         'Cfg': f"{n}x {pA['P']} ({pA['K']})",
-                        'Parts': [ {'part': pA['P'], 'count': n} ],
+                        'Parts': [ {'part': pA['P'], 'count': n, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']} ],
                         'Links': pA['Url']
                     })
         
@@ -238,10 +270,12 @@ class OptimizerService:
                                             'Vol': nA*pA['V'] + nB*pB['V'],
                                             'Cap': tot_c,
                                             'ESR': sys_esr,
+                                            'Area': nA*pA['A'] + nB*pB['A'],
+                                            'Height': max(pA['H'], pB['H']),
                                             'Type': '2p',
                                             'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']}",
                                             'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']}",
-                                            'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB} ],
+                                            'Parts': [ {'part': pA['P'], 'count': nA, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']}, {'part': pB['P'], 'count': nB, 'L': pB['L'], 'W': pB['W'], 'H': pB['H']} ],
                                             'Links': pA['Url']
                                         })
 
@@ -276,10 +310,12 @@ class OptimizerService:
                                             'Vol': nA*pA['V'] + nB*pB['V'] + nC*pC['V'],
                                             'Cap': tot,
                                             'ESR': sys_esr,
+                                            'Area': nA*pA['A'] + nB*pB['A'] + nC*pC['A'],
+                                            'Height': max(pA['H'], pB['H'], pC['H']),
                                             'Type': '3p',
                                             'BOM': f"{nA}x {pA['K']} + {nB}x {pB['K']} + {nC}x {pC['K']}",
                                             'Cfg': f"{nA}x {pA['P']} + {nB}x {pB['P']} + {nC}x {pC['P']}",
-                                            'Parts': [ {'part': pA['P'], 'count': nA}, {'part': pB['P'], 'count': nB}, {'part': pC['P'], 'count': nC} ],
+                                            'Parts': [ {'part': pA['P'], 'count': nA, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']}, {'part': pB['P'], 'count': nB, 'L': pB['L'], 'W': pB['W'], 'H': pB['H']}, {'part': pC['P'], 'count': nC, 'L': pC['L'], 'W': pC['W'], 'H': pC['H']} ],
                                             'Links': pA['Url']
                                         })
 
