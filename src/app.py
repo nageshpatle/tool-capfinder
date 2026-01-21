@@ -6,6 +6,9 @@ import re
 
 # Ensure we can import the backend logic (now in same dir)
 sys.path.append(os.path.dirname(__file__))
+import optimizer
+import importlib
+importlib.reload(optimizer)
 from optimizer import OptimizerService
 from layout_packer import pack_rectangles, render_layout
 import subprocess
@@ -50,12 +53,12 @@ st.set_page_config(
 
 # --- LOAD LOGIC ---
 @st.cache_resource
-def get_optimizer_v8():
+def get_optimizer_v27():
     # Adjusted path: up one level from src, then into data
     library_path = os.path.join(os.path.dirname(__file__), "..", "data", "Murata_Unified_Library.csv")
     return OptimizerService(library_path)
 
-optimizer = get_optimizer_v8()
+optimizer = get_optimizer_v27()
 
 # --- CSS TWEAKS ---
 st.markdown("""
@@ -111,7 +114,9 @@ st.markdown("""
     }
     
     /* Prevent the 'disabled' cursor/pointer-events if user wants to spam click */
-    /* Note: Streamlit might drop events if processing, but this allows correct visual feedback */
+    /* Note:# Streamlit App
+# Force reload: 2026-01-20
+might drop events if processing, but this allows correct visual feedback */
     section[data-testid="stSidebar"] * {
         cursor: default !important; /* Optional: forces default cursor even if busy */
     }
@@ -138,22 +143,57 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-    # --- SIDEBAR ---
+# --- INITIALIZE SESSION STATE ---
+DEFAULTS = {
+    "input_dc_bias": 12.0,
+    "input_min_rated": 15.0,
+    "input_min_cap": 9.9,
+    "input_max_cap": 10.1,
+    "input_conn_type": "upto 2",
+    "input_max_cnt": 10,
+    "input_min_temp": 85,
+    "input_freq": 100.0,
+    "input_max_esr": 10.0
+}
+
+for key, val in DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
+
+# --- SIDEBAR ---
 with st.sidebar:
     c_hdr, c_rst = st.columns([2, 1])
     with c_hdr:
         st.markdown("### Configuration")
     with c_rst:
         if st.button("Reset Defaults", type="secondary", use_container_width=True):
-            # Clear all relevant session state
-            keys_to_reset = [
-                "input_dc_bias", "input_min_rated", "input_min_cap", "input_max_cap",
-                "pkg_common", "pkg_other", "last_run_constraints", "last_df_disp",
-                "found_any", "final_count", "last_results", "layout_select"
+            # Apply defaults from the DEFAULTS dict
+            for key, val in DEFAULTS.items():
+                st.session_state[key] = val
+            
+            # Explicitly Select All Packages (Common + Extended)
+            # We access the global 'optimizer' instance to get available packages
+            all_pkgs = optimizer.get_available_packages()
+            common_list = ['01005', '0201', '0402', '0603', '0805', '1206', '1210', '2220']
+            
+            # Divide into Common & Other
+            c_av = [p for p in common_list if p in all_pkgs]
+            o_av = [p for p in all_pkgs if p not in common_list]
+            
+            # Set Session State directly
+            st.session_state['pkg_common'] = c_av
+            st.session_state['pkg_other'] = o_av
+
+            # Clear result and selection keys (removed pkg_common/pkg_other since we set them above)
+            keys_to_del = [
+                "last_run_constraints", 
+                "last_df_disp", "found_any", "final_count", 
+                "last_results", "layout_select"
             ]
-            for k in keys_to_reset:
+            for k in keys_to_del:
                 if k in st.session_state:
                     del st.session_state[k]
+                    
             st.rerun()
 
     # 1. Voltage Ratings first (TDK Style)
@@ -174,25 +214,21 @@ with st.sidebar:
     with c_bias:
         dc_bias = st.number_input(
             "DC Bias (V)", 
-            value=12.0, 
             step=0.5, 
             min_value=0.0, 
             format="%g",
             key="input_dc_bias",
-            on_change=on_bias_change
+            on_change=on_bias_change,
+            help="The DC voltage applied across the capacitors in your circuit. Most ceramic capacitors lose significant capacitance as DC bias increases (Voltage Coefficient)."
         )
     with c_rated:
-        # Initialize default if not set
-        if "input_min_rated" not in st.session_state:
-             st.session_state.input_min_rated = 15.0
-             
         min_rated_v = st.number_input(
             "Min Rated Voltage (V)", 
-            # value=float(dc_bias),  <-- REMOVED to prevent conflict with session state
             min_value=0.0, 
             step=1.0, 
             format="%g",
-            key="input_min_rated"
+            key="input_min_rated",
+            help="The minimum DC Voltage Rating required for the selected parts. Standard practice is to choose a rating ~20-50% higher than your operating DC Bias."
         )
     
     # 2. Capacitance Range
@@ -241,9 +277,13 @@ with st.sidebar:
                 st.session_state.input_min_cap = target_min
 
     with c_min_col:
-        c_min_input = st.number_input("Min Cap", value=9.9, step=0.1, min_value=0.0, format="%g", key="input_min_cap", on_change=on_min_change)
+        c_min_input = st.number_input("Min Cap", 
+                                      step=0.1, min_value=0.0, format="%g", key="input_min_cap", on_change=on_min_change,
+                                      help="Minimum target effective capacitance (after DC bias derating).")
     with c_max_col:
-        c_max_input = st.number_input("Max Cap", value=10.1, step=0.1, min_value=0.0, format="%g", key="input_max_cap", on_change=on_max_change)
+        c_max_input = st.number_input("Max Cap", 
+                                      step=0.1, min_value=0.0, format="%g", key="input_max_cap", on_change=on_max_change,
+                                      help="Maximum target effective capacitance (after DC bias derating).")
 
     # Use the session state values directly (logic handled in callback)
     c_min_real = c_min_input
@@ -265,18 +305,22 @@ with st.sidebar:
     c_types, c_count = st.columns([1, 1])
     
     with c_types:
-        st.markdown("**Parallel configurations**")
+        st.markdown("**Pool Depth**")
         conn_map = {
             "1": 1,
             "upto 2": 2, 
             "upto 3": 3
         }
         conn_keys = list(conn_map.keys())
-        conn_type_label = st.radio("Depth", conn_keys, index=1, label_visibility="collapsed", horizontal=True)
+        conn_type_label = st.radio("Depth", conn_keys, 
+                                   label_visibility="collapsed", horizontal=True, key="input_conn_type",
+                                   help="1: Only single part numbers. upto 2: Combines up to two different part numbers. upto 3: Combines up to three different part numbers.")
         conn_type = conn_map[conn_type_label]
         
     with c_count:
-        max_count = st.number_input("Max Count", value=10, min_value=1, step=1, format="%d")
+        max_count = st.number_input("Max Count", 
+                                    min_value=1, step=1, format="%d", key="input_max_cnt",
+                                    help="Maximum total number of capacitors allowed in the parallel bank.")
 
     
     
@@ -299,9 +343,10 @@ with st.sidebar:
     sel_common = st.multiselect(
         "Common", 
         common_available,
-        default=common_available, # Select All
+        # default=common_available, # REMOVED: Managed by session_state 'pkg_common'
         label_visibility="collapsed",
-        key="pkg_common"
+        key="pkg_common",
+        help="EIA package sizes frequently used in PCB design (e.g., 0402, 0603)."
     )
     
     # Others (Pink/Red)
@@ -310,9 +355,10 @@ with st.sidebar:
     sel_other = st.multiselect(
         "Extended", 
         other_list,
-        default=other_list, # Select All by default
+        # default=other_list, # REMOVED: Managed by session_state 'pkg_other'
         label_visibility="collapsed",
-        key="pkg_other"
+        key="pkg_other",
+        help="Larger or specialized package sizes (e.g., 1812, 2220)."
     )
     
     selected_pkgs = sorted(list(set(sel_common + sel_other)))
@@ -320,10 +366,16 @@ with st.sidebar:
     # st.markdown("---")
     
     with st.expander("Advanced Settings"):
-        min_temp = st.selectbox("Min Temperature (C)", [85, 105, 125], index=0)
+        min_temp = st.selectbox("Min Temperature (C)", [85, 105, 125], 
+                                 key="input_min_temp",
+                                 help="Filters capacitors by their Maximum Operating Temperature (e.g., X7R is 125C, X5R is 85C).")
         st.caption("ESR Optimization")
-        freq_khz = st.number_input("Operating Freq (kHz)", value=100.0, step=10.0, min_value=0.1, format="%g")
-        max_esr_mohm = st.number_input("Max System ESR (mΩ)", value=10.0, step=0.1, min_value=0.1, format="%.2f")
+        freq_khz = st.number_input("Operating Freq (kHz)", 
+                                   step=10.0, min_value=0.1, format="%g", key="input_freq",
+                                   help="Target frequency for ESR and Self-Resonant Frequency (SRF) calculations. Optimization will prioritize low ESR at this frequency.")
+        max_esr_mohm = st.number_input("Max System ESR (mΩ)", 
+                                       step=0.1, min_value=0.1, format="%.2f", key="input_max_esr",
+                                       help="Upper limit for the combined Equivalent Series Resistance of the entire parallel capacitor bank.")
 
     # --- SIDEBAR FOOTER (Removed from bottom) ---
 
@@ -393,7 +445,17 @@ def update_run_state():
     st.session_state.last_run_constraints = constraints.copy()
 
 # Compute Button
-run_btn = st.button("RUN OPTIMIZATION", type="primary", on_click=update_run_state)
+c_run, c_clear = st.columns([4, 1])
+with c_run:
+    run_btn = st.button("RUN OPTIMIZATION", type="primary", use_container_width=True, on_click=update_run_state)
+
+with c_clear:
+    if st.button("Clear", type="secondary", use_container_width=True):
+        keys_to_del = ["last_results", "last_df_disp", "found_any", "final_count", "layout_select"]
+        for k in keys_to_del:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.rerun()
 
 # Progress
 progress_container = st.empty()
@@ -439,6 +501,8 @@ def render_results_table(df_to_render, placeholder):
             display_text="DigiKey ↗", 
             width="small"
         )
+    
+    col_cfg["Alt Parts"] = st.column_config.TextColumn("Alt Parts", width="medium", help="Electrically identical alternative configurations found. The primary part number is shown in the columns to the left.")
 
     placeholder.dataframe(
         styler,
@@ -461,8 +525,17 @@ if run_btn:
         found_any = False
         
         try:
-            for prog, partial_sols in gen:
-                progress_container.progress(prog, text=f"Searching... {prog}%")
+            for val in gen:
+                # Defensive unpacking: Handle both legacy (2) and new (3) tuple formats
+                if len(val) == 3:
+                    prog, partial_sols, status = val
+                elif len(val) == 2:
+                    prog, partial_sols = val
+                    status = f"Processing... ({prog}%)"
+                else:
+                    continue # Skip invalid usage
+
+                progress_container.progress(prog, text=status)
                 
                 if partial_sols:
                     if 'error' in partial_sols[0]:
@@ -499,6 +572,12 @@ if run_btn:
                             row[f"P{idx+1}"] = f"{cnt}x {p_name}"
                             row[f"L{idx+1}"] = url
                         
+                        if 'Alts' in r and r['Alts']:
+                            alts_str = " | ".join(r['Alts'])
+                            row['Alts'] = f"{len(r['Alts'])} options: {alts_str}"
+                        else:
+                            row['Alts'] = "None"
+                        
                         rows.append(row)
                     
                     df_disp = pd.DataFrame(rows)
@@ -511,13 +590,14 @@ if run_btn:
                             df_disp[f"L{k}"] = None
                     
                     # Prepare for display
-                    ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3']
+                    ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3', 'Alts']
                     df_disp = df_disp[ordered_cols]
                     
                     new_columns = [
                         "Rank", "Derated Cap\n(µF)", "Vol\n(mm³)", "Area (flat)\n(mm²)", 
                         "Height (flat)\n(mm)", "ESR\n(mΩ)", "Configuration",
-                        "Part 1", "Buy 1", "Part 2", "Buy 2", "Part 3", "Buy 3"
+                        "Part 1", "Buy 1", "Part 2", "Buy 2", "Part 3", "Buy 3",
+                        "Alt Parts"
                     ]
                     df_disp.columns = new_columns
 
@@ -609,6 +689,7 @@ if 'last_results' in st.session_state and st.session_state.last_results:
     web_date = get_last_updated_webapp()
     st.markdown(f"""
     <div style="font-size: 11px; color: #888; text-align: center; padding-top: 10px;">
+        <div style="margin-bottom: 5px; font-weight: 600;">Made with μεράκι by Nagesh Patle</div>
         <div><b>Last Updated (Murata Database):</b> {db_date}</div>
         <div><b>Last Updated (Website):</b> {web_date}</div>
     </div>
