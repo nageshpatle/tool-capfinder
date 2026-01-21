@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+import re
 
 # Ensure we can import the backend logic (now in same dir)
 sys.path.append(os.path.dirname(__file__))
@@ -139,7 +140,21 @@ st.markdown("""
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown("### Configuration")
+    c_hdr, c_rst = st.columns([2, 1])
+    with c_hdr:
+        st.markdown("### Configuration")
+    with c_rst:
+        if st.button("Reset Defaults", type="secondary", use_container_width=True):
+            # Clear all relevant session state
+            keys_to_reset = [
+                "input_dc_bias", "input_min_rated", "input_min_cap", "input_max_cap",
+                "pkg_common", "pkg_other", "last_run_constraints", "last_df_disp",
+                "found_any", "final_count", "last_results", "layout_select"
+            ]
+            for k in keys_to_reset:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
 
     # 1. Voltage Ratings first (TDK Style)
     c_bias, c_rated = st.columns([1, 1])
@@ -159,7 +174,7 @@ with st.sidebar:
     with c_bias:
         dc_bias = st.number_input(
             "DC Bias (V)", 
-            value=10.0, 
+            value=12.0, 
             step=0.5, 
             min_value=0.0, 
             format="%g",
@@ -169,7 +184,7 @@ with st.sidebar:
     with c_rated:
         # Initialize default if not set
         if "input_min_rated" not in st.session_state:
-             st.session_state.input_min_rated = float(dc_bias)
+             st.session_state.input_min_rated = 12.0
              
         min_rated_v = st.number_input(
             "Min Rated Voltage (V)", 
@@ -226,9 +241,9 @@ with st.sidebar:
                 st.session_state.input_min_cap = target_min
 
     with c_min_col:
-        c_min_input = st.number_input("Min Cap", value=9.0, step=0.1, min_value=0.0, format="%g", key="input_min_cap", on_change=on_min_change)
+        c_min_input = st.number_input("Min Cap", value=9.9, step=0.1, min_value=0.0, format="%g", key="input_min_cap", on_change=on_min_change)
     with c_max_col:
-        c_max_input = st.number_input("Max Cap", value=11.0, step=0.1, min_value=0.0, format="%g", key="input_max_cap", on_change=on_max_change)
+        c_max_input = st.number_input("Max Cap", value=10.1, step=0.1, min_value=0.0, format="%g", key="input_max_cap", on_change=on_max_change)
 
     # Use the session state values directly (logic handled in callback)
     c_min_real = c_min_input
@@ -245,12 +260,12 @@ with st.sidebar:
 
     st.divider()
     
-    # Cap Types & Max Count (Side by Side)
+    # Parallel configurations & Max Count (Side by Side)
     # Squeeze radios (col1) and put Max Count (col2)
     c_types, c_count = st.columns([1, 1])
     
     with c_types:
-        st.markdown("**Cap Types**")
+        st.markdown("**Parallel configurations**")
         conn_map = {
             "1": 1,
             "upto 2": 2, 
@@ -316,8 +331,8 @@ with st.sidebar:
     
     st.markdown(f"""
     <div class="footer">
-        <div>Database: {db_date}</div>
-        <div>Webapp: {web_date}</div>
+        <div>Last Updated (Murata Database): {db_date}</div>
+        <div>Last Updated (Website): {web_date}</div>
         <div style="margin-top: 5px; font-weight: 600;">Made with Meraki by Nagesh Patle</div>
     </div>
     """, unsafe_allow_html=True)
