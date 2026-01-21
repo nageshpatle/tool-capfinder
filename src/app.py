@@ -53,12 +53,12 @@ st.set_page_config(
 
 # --- LOAD LOGIC ---
 @st.cache_resource
-def get_optimizer_v27():
+def get_optimizer_v34():
     # Adjusted path: up one level from src, then into data
     library_path = os.path.join(os.path.dirname(__file__), "..", "data", "Murata_Unified_Library.csv")
     return OptimizerService(library_path)
 
-optimizer = get_optimizer_v27()
+optimizer = get_optimizer_v34()
 
 # --- CSS TWEAKS ---
 st.markdown("""
@@ -305,7 +305,7 @@ with st.sidebar:
     c_types, c_count = st.columns([1, 1])
     
     with c_types:
-        st.markdown("**Pool Depth**")
+        st.markdown("**Pool Depth**", help="Defines the maximum number of UNIQUE part numbers allowed in a single configuration. '1' uses only one type of capacitor, while 'upto 3' can mix three different values or packages to optimize for area, volume, or ESR.")
         conn_map = {
             "1": 1,
             "upto 2": 2, 
@@ -314,7 +314,7 @@ with st.sidebar:
         conn_keys = list(conn_map.keys())
         conn_type_label = st.radio("Depth", conn_keys, 
                                    label_visibility="collapsed", horizontal=True, key="input_conn_type",
-                                   help="1: Only single part numbers. upto 2: Combines up to two different part numbers. upto 3: Combines up to three different part numbers.")
+                                   help="Select the maximum complexity for the capacitor bank combination.")
         conn_type = conn_map[conn_type_label]
         
     with c_count:
@@ -451,7 +451,7 @@ with c_run:
 
 with c_clear:
     if st.button("Clear", type="secondary", use_container_width=True):
-        keys_to_del = ["last_results", "last_df_disp", "found_any", "final_count", "layout_select"]
+        keys_to_del = ["last_results", "last_df_disp", "found_any", "final_count", "layout_select", "last_run_constraints"]
         for k in keys_to_del:
             if k in st.session_state:
                 del st.session_state[k]
@@ -494,15 +494,17 @@ def render_results_table(df_to_render, placeholder):
         "Configuration": st.column_config.TextColumn("Configuration", width="medium"), 
     }
     
-    for k in range(1, 4):
-        col_cfg[f"Part {k}"] = st.column_config.TextColumn(f"Part {k}", width="medium")
-        col_cfg[f"Buy {k}"] = st.column_config.LinkColumn(
-            f"Buy {k}", 
-            display_text="DigiKey ↗", 
-            width="small"
-        )
+    MAX_DEPTH = 3
+    for k in range(1, MAX_DEPTH + 1):
+        # Only configure if column exists
+        if f"Part {k}" in df_to_render.columns:
+            col_cfg[f"Part {k}"] = st.column_config.TextColumn(f"Part {k}", width="medium")
+            col_cfg[f"Buy {k}"] = st.column_config.LinkColumn(
+                f"Buy {k}", 
+                display_text="DigiKey ↗", 
+                width="small"
+            )
     
-    col_cfg["Alt Parts"] = st.column_config.TextColumn("Alt Parts", width="medium", help="Electrically identical alternative configurations found. The primary part number is shown in the columns to the left.")
 
     placeholder.dataframe(
         styler,
@@ -515,7 +517,19 @@ def render_results_table(df_to_render, placeholder):
 # Table placeholder
 table_placeholder = st.empty()
 
+if "search_in_progress" not in st.session_state:
+    st.session_state.search_in_progress = False
+
 if run_btn:
+    # --- RESET STATE FOR NEW SEARCH ---
+    st.session_state.search_in_progress = True
+    st.session_state.found_any = False
+    st.session_state.last_results = []
+    st.session_state.last_df_disp = None
+    st.session_state.final_count = 0
+    if 'layout_select' in st.session_state:
+        del st.session_state.layout_select
+
     if not selected_pkgs:
         st.error("Select at least one package.")
     else:
@@ -550,6 +564,13 @@ if run_btn:
                     st.session_state.last_results = df_raw.to_dict('records')
                     
                     rows = []
+                    
+                    # Helper for superscripts
+                    def to_superscript(n):
+                        # 0-9 and +
+                        mapping = str.maketrans("0123456789+", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺")
+                        return str(n).translate(mapping)
+
                     for i, r in enumerate(df_raw.to_dict('records')):
                         row = {
                             'Rank': i + 1,
@@ -558,25 +579,61 @@ if run_btn:
                             'Height': r.get('Height', 0),
                             'Capacitance': r['Cap'] * 1e6,
                             'ESR': r.get('ESR', 0) * 1000.0,
-                            'Configuration': r['BOM'] # User requested "3x 0603 + ..." which is 'BOM'
+                            'Configuration': r['BOM'] # Clean BOM without "Alts" text
                         }
                         
-                        # Columns for individual caps
-                        parts = r.get('Parts', [])
-                        for idx, p in enumerate(parts):
+                        # Gather all alternatives for counting
+                        primary_parts = r.get('Parts', [])
+                        # Robustness: Handle if Alts are strings (old cache) or dicts (new)
+                        alts_raw = r.get('Alts', [])
+                        alts_list = []
+                        if alts_raw:
+                            if isinstance(alts_raw[0], list):
+                                alts_list = alts_raw
+                            else:
+                                # Old format (strings) or empty
+                                # Cannot properly count unique parts from strings easily without parsing
+                                # Just ignore alts for exponent if data is stale, to prevent crash
+                                alts_list = []
+                        
+                        all_stacks = [primary_parts] + alts_list
+                        
+                        # Ensure primary parts are sorted (Area Desc) - matching optimizer logic
+                        # Safety check: ensure p has L/W
+                        primary_parts.sort(key=lambda x: (-(x.get('L',0) * x.get('W',0)), x.get('part','')))
+                        
+                        for idx, p in enumerate(primary_parts):
                             if idx >= 3: break
+                            
                             p_name = p['part']
                             cnt = p['count']
+                            
+                            # Count unique PART NUMBERS for this slot
+                            slot_alts = set()
+                            for stack in all_stacks:
+                                if idx < len(stack):
+                                    # Sort stack to ensure alignment
+                                    try:
+                                        s_sorted = sorted(stack, key=lambda x: (-(x.get('L',0) * x.get('W',0)), x.get('part','')))
+                                        slot_alts.add(s_sorted[idx]['part'])
+                                    except:
+                                        # Fallback if stack data is malformed
+                                        pass
+                            
+                            num_unique = len(slot_alts)
+                            # User Request: "reduce the counts by 1" -> Show number of ADDITIONAL alternatives
+                            # 1 Option -> 0 Add'l -> Show nothing
+                            # 2 Options -> 1 Add'l -> Show ¹
+                            
+                            additional_alts = num_unique - 1
+                            exp_str = ""
+                            if additional_alts > 0:
+                                exp_str = to_superscript(f"+{additional_alts}")
+                            
                             url = f"https://www.digikey.com/en/products/result?keywords={p_name}"
                             
-                            row[f"P{idx+1}"] = f"{cnt}x {p_name}"
+                            row[f"P{idx+1}"] = f"{cnt}x {p_name}{exp_str}"
                             row[f"L{idx+1}"] = url
-                        
-                        if 'Alts' in r and r['Alts']:
-                            alts_str = " | ".join(r['Alts'])
-                            row['Alts'] = f"{len(r['Alts'])} options: {alts_str}"
-                        else:
-                            row['Alts'] = "None"
                         
                         rows.append(row)
                     
@@ -584,21 +641,29 @@ if run_btn:
                     final_count = len(df_disp)
                     
                     # Fill missing
-                    for k in range(1, 4):
+                    
+                    # Determine depth from constraints
+                    run_depth = st.session_state.last_run_constraints.get('conn_type', 3)
+
+                    # Fill missing columns up to requested depth
+                    for k in range(1, run_depth + 1):
                         if f"P{k}" not in df_disp.columns:
                             df_disp[f"P{k}"] = ""
                             df_disp[f"L{k}"] = None
                     
                     # Prepare for display
-                    ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3', 'Alts']
-                    df_disp = df_disp[ordered_cols]
-                    
+                    ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration']
                     new_columns = [
                         "Rank", "Derated Cap\n(µF)", "Vol\n(mm³)", "Area (flat)\n(mm²)", 
-                        "Height (flat)\n(mm)", "ESR\n(mΩ)", "Configuration",
-                        "Part 1", "Buy 1", "Part 2", "Buy 2", "Part 3", "Buy 3",
-                        "Alt Parts"
+                        "Height (flat)\n(mm)", "ESR\n(mΩ)", "Configuration"
                     ]
+                    
+                    # Dynamically add Part/Buy columns
+                    for k in range(1, run_depth + 1):
+                        ordered_cols.extend([f"P{k}", f"L{k}"])
+                        new_columns.extend([f"Part {k}", f"Buy {k}"])
+
+                    df_disp = df_disp[ordered_cols]
                     df_disp.columns = new_columns
 
                     # Store for persistence
@@ -614,20 +679,24 @@ if run_btn:
             st.code(traceback.format_exc())
 
         progress_container.empty()
+        st.session_state.search_in_progress = False
 
 # --- PERSISTENT TABLE RENDERING ---
 # This ensures the table stays visible during reruns (like when interacting with the layout preview)
 if not run_btn and 'last_df_disp' in st.session_state:
     render_results_table(st.session_state.last_df_disp, table_placeholder)
 
-# Display persistence-based warnings
+# Display persistence-based warnings/errors
 f_any = st.session_state.get('found_any', False)
 f_count = st.session_state.get('final_count', 0)
+in_prog = st.session_state.get('search_in_progress', False)
 
-if not run_btn: # Only show these if not currently running a search
-    if 'last_df_disp' in st.session_state and not f_any:
+# We show messages if we have context (last_run_constraints) but no results or few results
+# And we only show them if a search is NOT currently active
+if not in_prog and st.session_state.get('last_run_constraints'):
+    if not f_any:
         st.error("No capacitors found matching your criteria. Try increasing Max ESR, lowering Frequency, or checking your constraints.")
-    elif 'last_df_disp' in st.session_state and f_count < 25:
+    elif f_count < 25:
         st.warning(f"Fewer than 25 results found ({f_count}). Consider increasing the maximum capacitor count, total capacitor tolerance range, or available package options.")
 
 # --- LAYOUT VISUALIZATION ---
@@ -643,6 +712,30 @@ if 'last_results' in st.session_state and st.session_state.last_results:
     if selected:
         idx = int(selected.split(":")[0].replace("Rank ", "")) - 1
         sol = results_for_layout[idx]
+        
+        # Display Alternatives if any
+        if 'Alts' in sol and sol['Alts']:
+            alts_data = sol['Alts'] # This is now a list of Parts LISTS
+            
+            if alts_data:
+                with st.expander(f"📦 Found {len(alts_data)} Alternative Part Combinations (Identical Specs)", expanded=False):
+                    st.write("The following part combinations provide the exact same performance (Capacitance, Voltage, Area, ESR) as the primary option above. You can use these if the primary parts are out of stock.")
+                    for alt_parts in alts_data:
+                        # Convert parts list back to string for display
+                        # Format: "2x GRM... + 3x GRM..." with Links!
+                        
+                        # We want clickable links for each part in the alternative string
+                        # e.g. "2x [GRM...](url) + 3x [GRM...](url)"
+                        
+                        links = []
+                        for p in alt_parts:
+                            p_n = p['part']
+                            c_n = p['count']
+                            u_n = f"https://www.digikey.com/en/products/result?keywords={p_n}"
+                            links.append(f"{c_n}x [{p_n}]({u_n})")
+                        
+                        alt_str_md = " + ".join(links)
+                        st.markdown(f"• {alt_str_md}")
         
         # Build parts list for packer
         parts_for_pack = []
