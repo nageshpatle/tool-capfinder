@@ -184,7 +184,7 @@ with st.sidebar:
     with c_rated:
         # Initialize default if not set
         if "input_min_rated" not in st.session_state:
-             st.session_state.input_min_rated = 12.0
+             st.session_state.input_min_rated = 15.0
              
         min_rated_v = st.number_input(
             "Min Rated Voltage (V)", 
@@ -326,9 +326,6 @@ with st.sidebar:
         max_esr_mohm = st.number_input("Max System ESR (mΩ)", value=10.0, step=0.1, min_value=0.1, format="%.2f")
 
     # --- SIDEBAR FOOTER ---
-    db_date = get_last_updated_db()
-    web_date = get_last_updated_webapp()
-    
     st.markdown(f"""
     <div class="footer">
         <div>Last Updated (Murata Database): {db_date}</div>
@@ -336,6 +333,17 @@ with st.sidebar:
         <div style="margin-top: 5px; font-weight: 600;">Made with Meraki by Nagesh Patle</div>
     </div>
     """, unsafe_allow_html=True)
+
+    with st.expander("Diagnostic Info"):
+        if optimizer.df_library is not None:
+            st.write(f"Library Loaded: {len(optimizer.df_library)} parts")
+            st.write(f"Library Path: {optimizer.library_path}")
+            st.write("First 2 rows (subset):")
+            st.dataframe(optimizer.df_library[['MfrPartName', 'VoltageRatedDC', 'Package']].head(2))
+        else:
+            st.error("Library not loaded!")
+            st.write(f"Library Path Checked: {optimizer.library_path}")
+            st.write(f"File Exists: {os.path.exists(optimizer.library_path)}")
 
 # --- MAIN AREA ---
 # Single Header with Emoji
@@ -470,71 +478,78 @@ if run_btn:
         final_count = 0
         found_any = False
         
-        for prog, partial_sols in gen:
-            progress_container.progress(prog, text=f"Searching... {prog}%")
-            
-            if partial_sols:
-                found_any = True
-                df_raw = pd.DataFrame(partial_sols)
-                df_raw = df_raw.sort_values(by='Vol').head(50)
+        try:
+            for prog, partial_sols in gen:
+                progress_container.progress(prog, text=f"Searching... {prog}%")
                 
-                # Store raw solutions for layout visualization
-                st.session_state.last_results = df_raw.to_dict('records')
-                
-                rows = []
-                for i, r in enumerate(df_raw.to_dict('records')):
-                    row = {
-                        'Rank': i + 1,
-                        'Vol': r['Vol'], 
-                        'Area': r.get('Area', 0),
-                        'Height': r.get('Height', 0),
-                        'Capacitance': r['Cap'] * 1e6,
-                        'ESR': r.get('ESR', 0) * 1000.0,
-                        'Configuration': r['BOM'] # User requested "3x 0603 + ..." which is 'BOM'
-                    }
+                if partial_sols:
+                    if 'error' in partial_sols[0]:
+                        st.error(f"Solver Error: {partial_sols[0]['error']}")
+                        break
+
+                    found_any = True
+                    df_raw = pd.DataFrame(partial_sols)
+                    df_raw = df_raw.sort_values(by='Vol').head(50)
                     
-                    # Columns for individual caps
-                    parts = r.get('Parts', [])
-                    for idx, p in enumerate(parts):
-                        if idx >= 3: break
-                        p_name = p['part']
-                        cnt = p['count']
-                        url = f"https://www.digikey.com/en/products/result?keywords={p_name}"
+                    # Store raw solutions for layout visualization
+                    st.session_state.last_results = df_raw.to_dict('records')
+                    
+                    rows = []
+                    for i, r in enumerate(df_raw.to_dict('records')):
+                        row = {
+                            'Rank': i + 1,
+                            'Vol': r['Vol'], 
+                            'Area': r.get('Area', 0),
+                            'Height': r.get('Height', 0),
+                            'Capacitance': r['Cap'] * 1e6,
+                            'ESR': r.get('ESR', 0) * 1000.0,
+                            'Configuration': r['BOM'] # User requested "3x 0603 + ..." which is 'BOM'
+                        }
                         
-                        row[f"P{idx+1}"] = f"{cnt}x {p_name}"
-                        row[f"L{idx+1}"] = url
+                        # Columns for individual caps
+                        parts = r.get('Parts', [])
+                        for idx, p in enumerate(parts):
+                            if idx >= 3: break
+                            p_name = p['part']
+                            cnt = p['count']
+                            url = f"https://www.digikey.com/en/products/result?keywords={p_name}"
+                            
+                            row[f"P{idx+1}"] = f"{cnt}x {p_name}"
+                            row[f"L{idx+1}"] = url
+                        
+                        rows.append(row)
                     
-                    rows.append(row)
-                
-                df_disp = pd.DataFrame(rows)
-                final_count = len(df_disp)
-                
-                # Fill missing
-                for k in range(1, 4):
-                    if f"P{k}" not in df_disp.columns:
-                        df_disp[f"P{k}"] = ""
-                        df_disp[f"L{k}"] = None
-                
-                # Prepare for display
-                ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3']
-                df_disp = df_disp[ordered_cols]
-                # Columns are renamed inside render_results_table or before calling it.
-                # Actually, render_results_table helper expects the columns to be there or it renames them.
-                # Let's make it consistent. I'll define columns here and pass to helper.
-                new_columns = [
-                    "Rank", "Derated Cap\n(µF)", "Vol\n(mm³)", "Area (flat)\n(mm²)", 
-                    "Height (flat)\n(mm)", "ESR\n(mΩ)", "Configuration",
-                    "Part 1", "Buy 1", "Part 2", "Buy 2", "Part 3", "Buy 3"
-                ]
-                df_disp.columns = new_columns
+                    df_disp = pd.DataFrame(rows)
+                    final_count = len(df_disp)
+                    
+                    # Fill missing
+                    for k in range(1, 4):
+                        if f"P{k}" not in df_disp.columns:
+                            df_disp[f"P{k}"] = ""
+                            df_disp[f"L{k}"] = None
+                    
+                    # Prepare for display
+                    ordered_cols = ['Rank', 'Capacitance', 'Vol', 'Area', 'Height', 'ESR', 'Configuration', 'P1', 'L1', 'P2', 'L2', 'P3', 'L3']
+                    df_disp = df_disp[ordered_cols]
+                    
+                    new_columns = [
+                        "Rank", "Derated Cap\n(µF)", "Vol\n(mm³)", "Area (flat)\n(mm²)", 
+                        "Height (flat)\n(mm)", "ESR\n(mΩ)", "Configuration",
+                        "Part 1", "Buy 1", "Part 2", "Buy 2", "Part 3", "Buy 3"
+                    ]
+                    df_disp.columns = new_columns
 
-                # Store for persistence
-                st.session_state.last_df_disp = df_disp
-                st.session_state.found_any = True
-                st.session_state.final_count = final_count
+                    # Store for persistence
+                    st.session_state.last_df_disp = df_disp
+                    st.session_state.found_any = True
+                    st.session_state.final_count = final_count
 
-                # Render
-                render_results_table(df_disp, table_placeholder)
+                    # Render
+                    render_results_table(df_disp, table_placeholder)
+        except Exception as e:
+            st.error(f"Search Execution Failed: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
 
         progress_container.empty()
 
