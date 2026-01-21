@@ -110,6 +110,7 @@ def render_layout(placed_rects, title="Layout Preview"):
     legend_patches = [mpatches.Patch(color=color_map[lbl], label=f"{lbl} ({label_dims[lbl][0]:.2f}*{label_dims[lbl][1]:.2f}*{label_dims[lbl][2]:.2f}mm)") for lbl in labels]
     ax.legend(handles=legend_patches, loc='upper right', fontsize=6)
     
+    
     plt.tight_layout()
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=100)
