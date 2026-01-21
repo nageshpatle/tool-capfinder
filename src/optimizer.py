@@ -205,7 +205,14 @@ class OptimizerService:
         search = combined.to_dict('records')
 
         sols = []
+        MAX_SOLS = 1000
         
+        def prune_solutions(s_list):
+            if len(s_list) > MAX_SOLS * 2:
+                s_list.sort(key=lambda x: x['Vol'])
+                return s_list[:MAX_SOLS]
+            return s_list
+
         # 1p Logic
         yield (15, [])
         for pA in search:
@@ -228,6 +235,7 @@ class OptimizerService:
                         'Parts': [ {'part': pA['P'], 'count': n, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']} ],
                         'Links': pA['Url']
                     })
+            sols = prune_solutions(sols)
         
         if sols: yield (30, sols)
 
@@ -278,6 +286,7 @@ class OptimizerService:
                                             'Parts': [ {'part': pA['P'], 'count': nA, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']}, {'part': pB['P'], 'count': nB, 'L': pB['L'], 'W': pB['W'], 'H': pB['H']} ],
                                             'Links': pA['Url']
                                         })
+                sols = prune_solutions(sols)
 
         # 3p Logic
         if conn_type >= 3:
@@ -318,6 +327,7 @@ class OptimizerService:
                                             'Parts': [ {'part': pA['P'], 'count': nA, 'L': pA['L'], 'W': pA['W'], 'H': pA['H']}, {'part': pB['P'], 'count': nB, 'L': pB['L'], 'W': pB['W'], 'H': pB['H']}, {'part': pC['P'], 'count': nC, 'L': pC['L'], 'W': pC['W'], 'H': pC['H']} ],
                                             'Links': pA['Url']
                                         })
+                                    sols = prune_solutions(sols)
 
         # Final Sort and Limit
         df_sol = pd.DataFrame(sols)

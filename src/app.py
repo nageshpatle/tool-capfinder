@@ -138,7 +138,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR ---
+    # --- SIDEBAR ---
 with st.sidebar:
     c_hdr, c_rst = st.columns([2, 1])
     with c_hdr:
@@ -155,26 +155,6 @@ with st.sidebar:
                 if k in st.session_state:
                     del st.session_state[k]
             st.rerun()
-
-    # --- DIAGNOSTICS & FOOTER (Relocated for visibility) ---
-    db_date = get_last_updated_db()
-    web_date = get_last_updated_webapp()
-    st.markdown(f"""
-    <div style="font-size: 11px; color: #888; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 15px;">
-        <div><b>Last Updated (Murata Database):</b> {db_date}</div>
-        <div><b>Last Updated (Website):</b> {web_date}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    with st.expander("🛠️ Diagnostic Info"):
-        if optimizer.df_library is not None:
-            st.success(f"Database: {len(optimizer.df_library)} parts loaded.")
-            st.write(f"Path: {optimizer.library_path}")
-            st.dataframe(optimizer.df_library[['MfrPartName', 'VoltageRatedDC', 'Package']].head(2))
-        else:
-            st.error("Database NOT loaded!")
-            st.write(f"Checking path: {optimizer.library_path}")
-            st.write(f"File exists: {os.path.exists(optimizer.library_path)}")
 
     # 1. Voltage Ratings first (TDK Style)
     c_bias, c_rated = st.columns([1, 1])
@@ -622,3 +602,14 @@ if 'last_results' in st.session_state and st.session_state.last_results:
                 st.info("No rectangles to pack.")
         else:
             st.info("No parts data available for layout preview.")
+
+    # --- FOOTER ---
+    st.markdown("---")
+    db_date = get_last_updated_db()
+    web_date = get_last_updated_webapp()
+    st.markdown(f"""
+    <div style="font-size: 11px; color: #888; text-align: center; padding-top: 10px;">
+        <div><b>Last Updated (Murata Database):</b> {db_date}</div>
+        <div><b>Last Updated (Website):</b> {web_date}</div>
+    </div>
+    """, unsafe_allow_html=True)
