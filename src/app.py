@@ -156,6 +156,26 @@ with st.sidebar:
                     del st.session_state[k]
             st.rerun()
 
+    # --- DIAGNOSTICS & FOOTER (Relocated for visibility) ---
+    db_date = get_last_updated_db()
+    web_date = get_last_updated_webapp()
+    st.markdown(f"""
+    <div style="font-size: 11px; color: #888; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 15px;">
+        <div><b>Last Updated (Murata Database):</b> {db_date}</div>
+        <div><b>Last Updated (Website):</b> {web_date}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🛠️ Diagnostic Info"):
+        if optimizer.df_library is not None:
+            st.success(f"Database: {len(optimizer.df_library)} parts loaded.")
+            st.write(f"Path: {optimizer.library_path}")
+            st.dataframe(optimizer.df_library[['MfrPartName', 'VoltageRatedDC', 'Package']].head(2))
+        else:
+            st.error("Database NOT loaded!")
+            st.write(f"Checking path: {optimizer.library_path}")
+            st.write(f"File exists: {os.path.exists(optimizer.library_path)}")
+
     # 1. Voltage Ratings first (TDK Style)
     c_bias, c_rated = st.columns([1, 1])
     # Gap Maintenance Logic (Push Behavior)
@@ -325,25 +345,7 @@ with st.sidebar:
         freq_khz = st.number_input("Operating Freq (kHz)", value=100.0, step=10.0, min_value=0.1, format="%g")
         max_esr_mohm = st.number_input("Max System ESR (mΩ)", value=10.0, step=0.1, min_value=0.1, format="%.2f")
 
-    # --- SIDEBAR FOOTER ---
-    st.markdown(f"""
-    <div class="footer">
-        <div>Last Updated (Murata Database): {db_date}</div>
-        <div>Last Updated (Website): {web_date}</div>
-        <div style="margin-top: 5px; font-weight: 600;">Made with Meraki by Nagesh Patle</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    with st.expander("Diagnostic Info"):
-        if optimizer.df_library is not None:
-            st.write(f"Library Loaded: {len(optimizer.df_library)} parts")
-            st.write(f"Library Path: {optimizer.library_path}")
-            st.write("First 2 rows (subset):")
-            st.dataframe(optimizer.df_library[['MfrPartName', 'VoltageRatedDC', 'Package']].head(2))
-        else:
-            st.error("Library not loaded!")
-            st.write(f"Library Path Checked: {optimizer.library_path}")
-            st.write(f"File Exists: {os.path.exists(optimizer.library_path)}")
+    # --- SIDEBAR FOOTER (Removed from bottom) ---
 
 # --- MAIN AREA ---
 # Single Header with Emoji
